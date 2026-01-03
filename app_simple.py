@@ -4,6 +4,7 @@ import streamlit as st
 from preprocessing import preprocess
 from similarity import jaccard_similarity
 from utils import read_file
+from collections import defaultdict
 
 st.set_page_config(layout="wide")
 
@@ -31,6 +32,8 @@ st.subheader("📝 Preprocessing Dokumen")
 if 'documents' not in st.session_state or st.session_state.get('folder') != folder:
     st.session_state.folder = folder
     documents = {}
+    documents_full = {}  # Simpan data lengkap (original, stem)
+    raw_texts = {}  # Simpan teks asli
     
     # Progress bar
     progress_bar = st.progress(0)
@@ -45,15 +48,20 @@ if 'documents' not in st.session_state or st.session_state.get('folder') != fold
         # Baca file
         path = os.path.join(folder, file)
         text = read_file(path)
+        raw_texts[file] = text  # Simpan teks asli
         
         # Preprocessing: case folding → tokenizing → filtering → stemming
         tokens = preprocess(text)
         
         # Simpan hasil (hanya kata dasar)
         documents[file] = [stem for original, stem in tokens]
+        # Simpan data lengkap untuk detail
+        documents_full[file] = tokens
     
     # Simpan ke session_state
     st.session_state.documents = documents
+    st.session_state.documents_full = documents_full
+    st.session_state.raw_texts = raw_texts
     
     # Selesai
     status_text.text(f"✅ Selesai memproses {len(files)} dokumen!")
@@ -61,6 +69,8 @@ if 'documents' not in st.session_state or st.session_state.get('folder') != fold
 else:
     # Ambil dari session_state (tidak preprocessing lagi)
     documents = st.session_state.documents
+    documents_full = st.session_state.documents_full
+    raw_texts = st.session_state.raw_texts
     st.info(f"✅ Menggunakan {len(documents)} dokumen yang sudah diproses (tidak preprocessing ulang)")
 
 # QUERY SEARCH
@@ -95,11 +105,49 @@ if query:
     # Urutkan berdasarkan skor (descending)
     results = sorted(results, key=lambda x: float(x["Skor"]), reverse=True)
     
-    # Tampilkan hasil
-    st.table(results)
+    # Filter hanya dokumen yang relevan (skor > 0)
+    relevant_results = [r for r in results if float(r["Skor"]) > 0]
     
-    # Dokumen paling relevan
-    if results and float(results[0]["Skor"]) > 0:
-        st.success(f"📄 Dokumen paling relevan: **{results[0]['Dokumen']}** (Skor: {results[0]['Skor']})")
+    # Tampilkan hasil
+    if relevant_results:
+        
+        # Detail setiap dokumen yang relevan (langsung sebagai hasil pencarian)
+        for idx, result in enumerate(relevant_results):
+            doc_name = result['Dokumen']
+            # Hanya dokumen pertama (paling relevan) yang terbuka
+            is_expanded = (idx == 0)
+            with st.expander(f"📄 {doc_name} - Skor: {result['Skor']} {result['Relevansi']}", expanded=False):
+                # Ambil data
+                tokens = documents_full.get(doc_name, [])
+                raw_text = raw_texts.get(doc_name, "")
+                
+                # ---- teks asli (cuplikan)
+                st.markdown("**Teks Asli (Cuplikan):**")
+                st.write(raw_text[:1000] + "...")
+
+                # ---- token hasil preprocessing
+                st.markdown("**Token Setelah Preprocessing & Stemming:**")
+                st.write(tokens)
+
+                # ---- frekuensi kata dasar
+                mapping = defaultdict(list)
+
+                for original, stem in tokens:
+                    mapping[stem].append(original)
+
+                data = []
+                for stem, originals in mapping.items():
+                    data.append({
+                        "Kata Sebelum Stemming": ", ".join(sorted(set(originals))),
+                        "Kata Dasar": stem,
+                        "Frekuensi": len(originals)
+                    })
+
+                st.markdown("**Kata Sebelum Stemming → Kata Dasar → Frekuensi:**")
+                st.table(data)
+        
+        # Info ringkasan
+        st.success(f"📄 Dokumen paling relevan: **{relevant_results[0]['Dokumen']}** (Skor: {relevant_results[0]['Skor']})")
+        st.info(f"Ditemukan {len(relevant_results)} dari {len(results)} dokumen yang relevan.")
     else:
         st.warning("Tidak ada dokumen yang relevan dengan query.")
