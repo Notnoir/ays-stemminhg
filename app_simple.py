@@ -1,153 +1,304 @@
 # app_simple.py
 import os
 import streamlit as st
-from preprocessing import preprocess
+import pandas as pd
+from preprocessing import preprocess, preprocess_detailed
 from similarity import jaccard_similarity
 from utils import read_file
 from collections import defaultdict
 
-st.set_page_config(layout="wide")
+# Konfigurasi Halaman
+st.set_page_config(
+    page_title="Sistem Temu Balik Dokumen",
+    page_icon="🔍",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-st.title("📄 Temu Balik Dokumen - Versi Simple")
-st.caption("Stemming AYS + Jaccard Similarity")
+# Custom CSS untuk mempercantik tampilan
+st.markdown("""
+    <style>
+    .main {
+        background-color: #f8f9fa;
+    }
+    .stButton>button {
+        width: 100%;
+    }
+    .metric-card {
+        background-color: white;
+        padding: 15px;
+        border-radius: 10px;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    </style>
+    """, unsafe_allow_html=True)
 
-# BACA DOKUMEN
-folder = st.text_input("Masukkan path folder dokumen:", "documents")
+# --- SIDEBAR ---
+with st.sidebar:
+    st.title("⚙️ Konfigurasi")
+    
+    # Input Folder
+    folder = st.text_input("📂 Folder Dokumen", "documents", help="Masukkan path folder tempat dokumen disimpan.")
+    
+    if not os.path.exists(folder):
+        st.error("❌ Folder tidak ditemukan.")
+        st.stop()
+    
+    # List Files
+    files = [f for f in os.listdir(folder) if os.path.isfile(os.path.join(folder, f))]
+    
+    st.info(f"📂 Terdeteksi: **{len(files)} dokumen**")
+    
+    with st.expander("📜 Lihat Daftar Dokumen"):
+        st.write(files)
+        
+    st.markdown("---")
+    st.markdown("### Tentang Aplikasi")
+    st.caption("Sistem Temu Balik Informasi menggunakan **Jaccard Similarity** dan **Stemming AYS**.")
+    st.caption("Dibuat untuk Tugas Besar Data Mining.")
 
-if not os.path.exists(folder):
-    st.error("Folder tidak ditemukan.")
-    st.stop()
+# --- MAIN CONTENT ---
+st.title("🔍 Sistem Temu Balik Dokumen")
+st.markdown("### Cari dokumen relevan dengan cepat dan akurat")
 
-# Ambil semua file dalam folder
-files = [f for f in os.listdir(folder) if os.path.isfile(os.path.join(folder, f))]
-
-st.write(f"**Jumlah Dokumen:** {len(files)}")
-st.write("**Daftar Dokumen:**", files)
-
-# PREPROCESSING DOKUMEN
-st.subheader("📝 Preprocessing Dokumen")
-
-# Gunakan session_state untuk menyimpan hasil preprocessing
-# Hanya jalankan preprocessing jika belum pernah atau folder berubah
+# --- PREPROCESSING LOGIC (Cached) ---
 if 'documents' not in st.session_state or st.session_state.get('folder') != folder:
-    st.session_state.folder = folder
-    documents = {}
-    documents_full = {}  # Simpan data lengkap (original, stem)
-    raw_texts = {}  # Simpan teks asli
-    
-    # Progress bar
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-    
-    for idx, file in enumerate(files):
-        # Update progress
-        progress = (idx + 1) / len(files)
-        progress_bar.progress(progress)
-        status_text.text(f"Memproses {file}... ({idx + 1}/{len(files)})")
+    with st.spinner('🔄 Sedang memproses dokumen... Mohon tunggu sebentar.'):
+        st.session_state.folder = folder
+        documents = {}
+        documents_full = {}
+        documents_detailed = {}  # Menyimpan detail preprocessing
+        raw_texts = {}
         
-        # Baca file
-        path = os.path.join(folder, file)
-        text = read_file(path)
-        raw_texts[file] = text  # Simpan teks asli
+        progress_bar = st.progress(0)
         
-        # Preprocessing: case folding → tokenizing → filtering → stemming
-        tokens = preprocess(text)
+        for idx, file in enumerate(files):
+            # Update progress
+            progress = (idx + 1) / len(files)
+            progress_bar.progress(progress)
+            
+            path = os.path.join(folder, file)
+            text = read_file(path)
+            raw_texts[file] = text
+            
+            tokens = preprocess(text)
+            detailed = preprocess_detailed(text)
+            documents[file] = [stem for original, stem in tokens]
+            documents_full[file] = tokens
+            documents_detailed[file] = detailed
         
-        # Simpan hasil (hanya kata dasar)
-        documents[file] = [stem for original, stem in tokens]
-        # Simpan data lengkap untuk detail
-        documents_full[file] = tokens
-    
-    # Simpan ke session_state
-    st.session_state.documents = documents
-    st.session_state.documents_full = documents_full
-    st.session_state.raw_texts = raw_texts
-    
-    # Selesai
-    status_text.text(f"✅ Selesai memproses {len(files)} dokumen!")
-    progress_bar.empty()  # Hilangkan progress bar setelah selesai
+        st.session_state.documents = documents
+        st.session_state.documents_full = documents_full
+        st.session_state.documents_detailed = documents_detailed
+        st.session_state.raw_texts = raw_texts
+        
+        progress_bar.empty()
+        st.success(f"✅ Berhasil memproses {len(files)} dokumen!")
 else:
-    # Ambil dari session_state (tidak preprocessing lagi)
     documents = st.session_state.documents
     documents_full = st.session_state.documents_full
+    documents_detailed = st.session_state.documents_detailed
     raw_texts = st.session_state.raw_texts
-    st.info(f"✅ Menggunakan {len(documents)} dokumen yang sudah diproses (tidak preprocessing ulang)")
 
-# QUERY SEARCH
-st.subheader("🔍 Pencarian Dokumen")
-query = st.text_input("Masukkan kata kunci pencarian:")
+# --- SEARCH UI ---
+col1, col2 = st.columns([4, 1])
+with col1:
+    query = st.text_input("🔎 Masukkan kata kunci pencarian:", placeholder="Contoh: ekonomi digital di indonesia...")
+with col2:
+    st.write("") # Spacer
+    st.write("") # Spacer
+    search_button = st.button("Cari", type="primary")
 
 if query:
-    # Preprocessing query
+    # Preprocessing Query
     query_tokens = preprocess(query)
     query_stems = [stem for original, stem in query_tokens]
     
-    st.write("**Query setelah preprocessing:**", query_stems)
-    
-    # HITUNG SIMILARITY
+    st.markdown("---")
     st.subheader("📊 Hasil Pencarian")
     
+    # Tampilkan Query yang diproses
+    with st.expander("ℹ️ Detail Query (Preprocessing)", expanded=False):
+        st.write("**Query Asli:**", query)
+        st.write("**Token Hasil Stemming:**", query_stems)
+
+    # Hitung Similarity
     results = []
-    
     for doc_name, doc_stems in documents.items():
-        # Hitung Jaccard Similarity
         score = jaccard_similarity(
-            [(w, w) for w in doc_stems],  # Convert ke tuple format
+            [(w, w) for w in doc_stems],
             [(w, w) for w in query_stems]
         )
         
+        relevansi_icon = "⭐⭐⭐" if score > 0.3 else "⭐⭐" if score > 0.1 else "⭐"
+        if score == 0: relevansi_icon = "⚪"
+            
         results.append({
             "Dokumen": doc_name,
-            "Skor": f"{score:.4f}",
-            "Relevansi": "⭐⭐⭐" if score > 0.3 else "⭐⭐" if score > 0.1 else "⭐"
+            "Skor": score,
+            "Relevansi": relevansi_icon
         })
     
-    # Urutkan berdasarkan skor (descending)
-    results = sorted(results, key=lambda x: float(x["Skor"]), reverse=True)
+    # Sorting
+    results = sorted(results, key=lambda x: x["Skor"], reverse=True)
+    relevant_results = [r for r in results if r["Skor"] > 0]
     
-    # Filter hanya dokumen yang relevan (skor > 0)
-    relevant_results = [r for r in results if float(r["Skor"]) > 0]
+    # Metrics
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Total Dokumen", len(files))
+    m2.metric("Dokumen Relevan", len(relevant_results))
+    m3.metric("Top Score", f"{relevant_results[0]['Skor']:.4f}" if relevant_results else "0.0000")
     
-    # Tampilkan hasil
     if relevant_results:
+        st.markdown("### 📄 Daftar Dokumen Relevan")
         
-        # Detail setiap dokumen yang relevan (langsung sebagai hasil pencarian)
         for idx, result in enumerate(relevant_results):
             doc_name = result['Dokumen']
-            # Hanya dokumen pertama (paling relevan) yang terbuka
-            is_expanded = (idx == 0)
-            with st.expander(f"📄 {doc_name} - Skor: {result['Skor']} {result['Relevansi']}", expanded=False):
-                # Ambil data
-                tokens = documents_full.get(doc_name, [])
-                raw_text = raw_texts.get(doc_name, "")
+            score = result['Skor']
+            
+            # Card style expander
+            with st.expander(f"#{idx+1} {doc_name} | Skor: {score:.4f} {result['Relevansi']}", expanded=(idx == 0)):
                 
-                # ---- teks asli (cuplikan)
-                st.markdown("**Teks Asli (Cuplikan):**")
-                st.write(raw_text[:1000] + "...")
+                tab1, tab2, tab3, tab4 = st.tabs(["📜 Cuplikan Teks", "🔍 Analisis Kata", "🧮 Perhitungan Similarity", "ℹ️ Info File"])
+                
+                with tab1:
+                    raw_text = raw_texts.get(doc_name, "")
+                    # Highlight query terms (simple approach)
+                    # Note: This is case sensitive in simple replace, but good enough for visual
+                    display_text = raw_text[:1500] + ("..." if len(raw_text) > 1500 else "")
+                    st.markdown(f"```text\n{display_text}\n```")
+                    st.caption("*Menampilkan 1500 karakter pertama.*")
 
-                # ---- token hasil preprocessing
-                st.markdown("**Token Setelah Preprocessing & Stemming:**")
-                st.write(tokens)
+                with tab2:
+                    detailed_tokens = documents_detailed.get(doc_name, [])
+                    
+                    # Buat mapping untuk menghitung frekuensi berdasarkan stem
+                    stem_mapping = defaultdict(lambda: {'originals': [], 'case_folding': [], 'filtering': [], 'count': 0})
+                    
+                    for detail in detailed_tokens:
+                        stem = detail['stemming']
+                        stem_mapping[stem]['originals'].append(detail['original'])
+                        stem_mapping[stem]['case_folding'].append(detail['case_folding'])
+                        stem_mapping[stem]['filtering'].append(detail['filtering'])
+                        stem_mapping[stem]['count'] += 1
+                    
+                    # Buat data untuk tabel dengan tahapan proses
+                    data = []
+                    for stem, info in stem_mapping.items():
+                        is_match = stem in query_stems
+                        # Ambil contoh pertama untuk setiap tahap
+                        original_examples = sorted(set(info['originals']))
+                        
+                        data.append({
+                            "Kata Asli": ", ".join(original_examples[:3]) + ("..." if len(original_examples) > 3 else ""),
+                            "Case Folding": original_examples[0].lower(),
+                            "Filtering": original_examples[0].lower(),  # sama karena sudah lolos filtering
+                            "Stemming": stem,
+                            "Frekuensi": info['count'],
+                            "Match": "✅" if is_match else ""
+                        })
+                    
+                    df_analysis = pd.DataFrame(data)
+                    # Sort by Match then Frequency
+                    if not df_analysis.empty:
+                        df_analysis = df_analysis.sort_values(by=["Match", "Frekuensi"], ascending=[False, False])
+                    
+                    st.caption("📊 **Tahapan Preprocessing:** Kata Asli → Case Folding → Filtering (Stopword Removal) → Stemming")
+                    
+                    st.dataframe(
+                        df_analysis, 
+                        column_config={
+                            "Kata Asli": st.column_config.TextColumn("Kata Asli", width="medium"),
+                            "Case Folding": st.column_config.TextColumn("Case Folding", width="medium"),
+                            "Filtering": st.column_config.TextColumn("Filtering", width="medium"),
+                            "Stemming": st.column_config.TextColumn("Stemming (Hasil)", width="medium"),
+                            "Frekuensi": st.column_config.ProgressColumn("Frekuensi", format="%d", min_value=0, max_value=max([d['Frekuensi'] for d in data]) if data else 100),
+                            "Match": st.column_config.TextColumn("Match", width="small")
+                        },
+                        use_container_width=True,
+                        hide_index=True
+                    )
 
-                # ---- frekuensi kata dasar
-                mapping = defaultdict(list)
+                with tab3:
+                    st.markdown("### 🧮 Perhitungan Jaccard Similarity")
+                    
+                    # Ambil set dokumen dan query
+                    doc_stems = documents.get(doc_name, [])
+                    doc_set = set(doc_stems)
+                    query_set = set(query_stems)
+                    
+                    # Hitung intersection dan union
+                    intersection = doc_set.intersection(query_set)
+                    union = doc_set.union(query_set)
+                    
+                    # Tampilkan rumus
+                    st.markdown("**Rumus Jaccard Similarity:**")
+                    st.latex(r"J(A, B) = \frac{|A \cap B|}{|A \cup B|}")
+                    
+                    st.markdown("---")
+                    
+                    # Detail set
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        st.markdown("**Set Query (A):**")
+                        st.info(f"Jumlah kata unik: **{len(query_set)}**")
+                        with st.expander("Lihat kata-kata"):
+                            st.write(sorted(list(query_set)))
+                    
+                    with col2:
+                        st.markdown("**Set Dokumen (B):**")
+                        st.info(f"Jumlah kata unik: **{len(doc_set)}**")
+                        with st.expander("Lihat kata-kata"):
+                            st.write(sorted(list(doc_set)))
+                    
+                    st.markdown("---")
+                    
+                    # Intersection
+                    st.markdown("**Irisan (A ∩ B):**")
+                    st.success(f"Jumlah kata yang sama: **{len(intersection)}**")
+                    if intersection:
+                        st.write("Kata-kata yang cocok:", ", ".join(sorted(list(intersection))))
+                    else:
+                        st.write("Tidak ada kata yang cocok")
+                    
+                    st.markdown("---")
+                    
+                    # Union
+                    st.markdown("**Gabungan (A ∪ B):**")
+                    st.info(f"Jumlah total kata unik: **{len(union)}**")
+                    
+                    st.markdown("---")
+                    
+                    # Perhitungan
+                    st.markdown("**Perhitungan:**")
+                    
+                    if len(union) > 0:
+                        st.latex(rf"J(A, B) = \frac{{{len(intersection)}}}{{{len(union)}}} = {score:.6f}")
+                        
+                        # Penjelasan dalam persentase
+                        percentage = score * 100
+                        st.metric("Tingkat Kemiripan", f"{percentage:.2f}%")
+                        
+                        # Interpretasi
+                        if score > 0.5:
+                            interpretation = "🟢 Sangat Mirip - Dokumen sangat relevan dengan query"
+                        elif score > 0.3:
+                            interpretation = "🟡 Cukup Mirip - Dokumen cukup relevan dengan query"
+                        elif score > 0.1:
+                            interpretation = "🟠 Sedikit Mirip - Dokumen memiliki keterkaitan dengan query"
+                        else:
+                            interpretation = "🔴 Kurang Mirip - Dokumen kurang relevan dengan query"
+                        
+                        st.info(interpretation)
+                    else:
+                        st.warning("Tidak dapat menghitung similarity (union kosong)")
 
-                for original, stem in tokens:
-                    mapping[stem].append(original)
+                with tab4:
+                    st.write(f"**Nama File:** {doc_name}")
+                    st.write(f"**Ukuran Teks:** {len(raw_texts.get(doc_name, ''))} karakter")
+                    st.write(f"**Jumlah Token:** {len(documents_full.get(doc_name, []))} kata")
 
-                data = []
-                for stem, originals in mapping.items():
-                    data.append({
-                        "Kata Sebelum Stemming": ", ".join(sorted(set(originals))),
-                        "Kata Dasar": stem,
-                        "Frekuensi": len(originals)
-                    })
-
-                st.markdown("**Kata Sebelum Stemming → Kata Dasar → Frekuensi:**")
-                st.table(data)
-        
-        # Info ringkasan
-        st.success(f"📄 Dokumen paling relevan: **{relevant_results[0]['Dokumen']}** (Skor: {relevant_results[0]['Skor']})")
-        st.info(f"Ditemukan {len(relevant_results)} dari {len(results)} dokumen yang relevan.")
     else:
-        st.warning("Tidak ada dokumen yang relevan dengan query.")
+        st.warning("⚠️ Tidak ditemukan dokumen yang cocok dengan kata kunci tersebut.")
+        st.markdown("Cobalah menggunakan kata kunci yang lebih umum atau periksa kembali ejaan Anda.")
